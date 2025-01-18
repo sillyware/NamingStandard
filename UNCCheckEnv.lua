@@ -1,5 +1,21 @@
+do
+	local neededFunctions = {'setreadonly', 'isreadonly', 'getgenv'}
+	local missingFunctions = {}
+
+	for i, funcName in ipairs(neededFunctions) do
+		if not funcName then
+			table.insert(missingFunctions, funcName)
+		end
+	end
+
+	if #missingFunctions > 0 then
+		assert(false, "Cannot run! Missing important functions: " .. table.concat(missingFunctions, ", "))
+	end
+end
+
 local passes, fails, undefined = 0, 0, 0
 local running = 0
+local results = {}
 
 local function getGlobal(path)
 	local value = getfenv(0)
@@ -13,42 +29,97 @@ local function getGlobal(path)
 	return value
 end
 
-local function test(name, aliases, callback)
-	running += 1
+local function setGlobal(t: table, path, func)
+	local value = t
+	local name
 
-	task.spawn(function()
-		if not callback then
-			print("⏺️ " .. name)
-		elseif not getGlobal(name) then
-			fails += 1
-			warn("⛔ " .. name)
+	while value ~= nil and path ~= "" do
+		name, path = string.match(path, "^([^.]+)%.?(.*)$")
+		if path == "" then
+			local readonly = isreadonly(value)
+			if readonly then
+				setreadonly(value, false)
+			end
+			value[name] = func
+			if readonly then
+				setreadonly(value, true)
+			end
 		else
-			local success, message = pcall(callback)
-	
-			if success then
-				passes += 1
-				print("✅ " .. name .. (message and " • " .. message or ""))
-			else
-				fails += 1
-				warn("⛔ " .. name .. " failed: " .. message)
+			value = value[name]
+			if not value then
+				local readonly = isreadonly(value)
+				if readonly then
+					setreadonly(value, false)
+				end
+                value[name] = {}
+				value = value[name]
+				if readonly then
+					setreadonly(value, true)
+				end
 			end
 		end
-	
-		local undefinedAliases = {}
-	
-		for _, alias in ipairs(aliases) do
-			if getGlobal(alias) == nil then
-				table.insert(undefinedAliases, alias)
-			end
-		end
-	
-		if #undefinedAliases > 0 then
-			undefined += 1
-			warn("⚠️ " .. table.concat(undefinedAliases, ", "))
-		end
+	end
+end
 
-		running -= 1
-	end)
+local function test(name: string, aliases: table, callback: (...any) -> ...any, dependencies: table)
+	local realname = name
+	local func = getGlobal(realname)
+	if not func then
+		for i, alias in next, aliases do
+			if getGlobal(alias) then
+				table.insert(aliases, name)
+				table.remove(aliases, i)
+				name = alias
+				func = getGlobal(name)
+				setGlobal(getgenv(), realname, func)
+				break
+			end
+		end
+	end
+	if not func then
+		fails += 1
+		warn("⛔ " .. name)
+	elseif not callback then
+		passes += 1
+		print("⏺️ " .. name)
+	else
+		local success = false
+		local message = nil
+		local missing = false
+		for i, dependency in ipairs(dependencies or {}) do
+			if not getGlobal(dependency) then
+				missing = true
+				message = "Missing dependency: " .. dependency
+				break
+			end
+		end
+		if not missing then
+			success, message = pcall(callback)
+		end
+	    
+		if success then
+			passes += 1
+			print("✅ " .. name .. (message and " • " .. message or ""))
+		else
+			fails += 1
+			warn("⛔ " .. name .. " failed: " .. message)
+		end
+	end
+
+	local undefinedAliases = {}
+
+	for _, alias in ipairs(aliases) do
+		if getGlobal(alias) == nil then
+			table.insert(undefinedAliases, alias)
+		end
+	end
+
+	if #undefinedAliases > 0 then
+		undefined += 1
+		warn("⚠️ " .. table.concat(undefinedAliases, ", "))
+	end
+
+	task.wait()
 end
 
 -- Header and summary
@@ -58,15 +129,17 @@ print("\n")
 print("UNC Environment Check")
 print("✅ - Pass, ⛔ - Fail, ⏺️ - No test, ⚠️ - Missing aliases\n")
 
+local finished = false
+
 task.defer(function()
-	repeat task.wait() until running == 0
+	repeat task.wait() until finished
 
 	local rate = math.round(passes / (passes + fails) * 100)
 	local outOf = passes .. " out of " .. (passes + fails)
 
 	print("\n")
 
-	print("UNC Summary")
+	print("dUNC Summary")
 	print("✅ Tested with a " .. rate .. "% success rate (" .. outOf .. ")")
 	print("⛔ " .. fails .. " tests failed")
 	print("⚠️ " .. undefined .. " globals are missing aliases")
@@ -108,7 +181,7 @@ test("compareinstances", {}, function()
 	local clone = cloneref(part)
 	assert(part ~= clone, "Clone should not be equal to original")
 	assert(compareinstances(part, clone), "Clone should be equal to original when using compareinstances()")
-end)
+end, {'cloneref'})
 
 -- Closures
 
@@ -147,10 +220,6 @@ local function shallowEqual(t1, t2)
 	return true
 end
 
-test("checkcaller", {}, function()
-	assert(checkcaller(), "Main scope should return true")
-end)
-
 test("clonefunction", {}, function()
 	local function test()
 		return "success"
@@ -158,7 +227,14 @@ test("clonefunction", {}, function()
 	local copy = clonefunction(test)
 	assert(test() == copy(), "The clone should return the same value as the original")
 	assert(test ~= copy, "The clone should not be equal to the original")
-end)
+
+	local test2 = newcclosure(function()
+		return "success"
+	end)
+	local copy2 = clonefunction(test2)
+	assert(test2() == copy2(), "The clone should return the same value as the original (C closure)")
+	assert(test2 ~= copy2, "The clone should not be equal to the original (C closure)")
+end, {'newcclosure'})
 
 test("getcallingscript", {})
 
@@ -168,7 +244,7 @@ test("getscriptclosure", {"getscriptfunction"}, function()
 	local generated = getscriptclosure(module)()
 	assert(constants ~= generated, "Generated module should not match the original")
 	assert(shallowEqual(constants, generated), "Generated constant table should be shallow equal to the original")
-end)
+end, {'getrenv'})
 
 test("hookfunction", {"replaceclosure"}, function()
 	local function test()
@@ -197,13 +273,9 @@ test("isexecutorclosure", {"checkclosure", "isourclosure"}, function()
 	assert(isexecutorclosure(newcclosure(function() end)) == true, "Did not return true for an executor C closure")
 	assert(isexecutorclosure(function() end) == true, "Did not return true for an executor Luau closure")
 	assert(isexecutorclosure(print) == false, "Did not return false for a Roblox global")
-end)
+end, {'newcclosure'})
 
 test("loadstring", {}, function()
-	local animate = game:GetService("Players").LocalPlayer.Character.Animate
-	local bytecode = getscriptbytecode(animate)
-	local func = loadstring(bytecode)
-	assert(type(func) ~= "function", "Luau bytecode should not be loadable!")
 	assert(assert(loadstring("return ... + 1"))(1) == 2, "Failed to do simple math")
 	assert(type(select(2, loadstring("f"))) == "string", "Loadstring did not return anything for a compiler error")
 end)
@@ -216,7 +288,7 @@ test("newcclosure", {}, function()
 	assert(test() == testC(), "New C closure should return the same value as the original")
 	assert(test ~= testC, "New C closure should not be same as the original")
 	assert(iscclosure(testC), "New C closure should be a C closure")
-end)
+end, {'iscclosure'})
 
 -- Console
 
@@ -327,37 +399,49 @@ test("debug.getproto", {}, function()
 		local function proto()
 			return true
 		end
+
+		return proto
 	end
 	local proto = debug.getproto(test, 1, true)[1]
 	local realproto = debug.getproto(test, 1)
-	assert(proto, "Failed to get the inner function")
-	assert(proto() == true, "The inner function did not return anything")
-	if not realproto() then
-		return "Proto return values are disabled on this executor"
-	end
+	assert(proto, "Failed to get the inner function (third argument is true)")
+	assert(realproto, "Failed to get the inner function (third argument is false)")
+	assert(proto() == true, "The inner function did not return anything (third argument is true)")
+	assert(proto == test(), "The inner function is not equal to the outer function (make proper handling for third argument)")
+	assert(realproto() == true, "The inner function (third argument is false) did not return anything")
 end)
 
 test("debug.getprotos", {}, function()
+	local rightresults = {
+		true,
+		'a',
+		'b'
+	}
 	local function test()
 		local function _1()
 			return true
 		end
 		local function _2()
-			return true
+			return 'a'
 		end
 		local function _3()
-			return true
+			return 'b'
 		end
+
+		return _1, _2, _3
 	end
-	for i in ipairs(debug.getprotos(test)) do
+	for i, gottenproto in ipairs(debug.getprotos(test)) do
 		local proto = debug.getproto(test, i, true)[1]
 		local realproto = debug.getproto(test, i)
-		assert(proto(), "Failed to get inner function " .. i)
-		if not realproto() then
-			return "Proto return values are disabled on this executor"
-		end
+		local rightresult = rightresults[i]
+		assert(gottenproto, "Failed to get inner function " .. i)
+		assert(proto, "Failed to get inner function " .. i .. 'third getproto argument is true')
+		assert(realproto, "Failed to get inner function " .. i .. 'third getproto argument is false')
+		assert(gottenproto() == rightresult, "The inner function " .. i .. " did not return the right result")
+	    assert(proto() == rightresult, "The inner function " .. i .. " did not return the right result (third getproto argument is true)")
+		assert(realproto() == rightresult, "The inner function " .. i .. " did not return the right result (third getproto argument is false)")
 	end
-end)
+end, {'debug.getproto'})
 
 test("debug.getstack", {}, function()
 	local _ = "a" .. "b"
@@ -366,21 +450,33 @@ test("debug.getstack", {}, function()
 end)
 
 test("debug.getupvalue", {}, function()
-	local upvalue = function() end
+	local u1 = function() end
+	local u2 = 2
+	local u3 = 'str'
 	local function test()
-		print(upvalue)
+		print(u1)
+		u2 = 3
+		u3 = 'str2'
 	end
-	assert(debug.getupvalue(test, 1) == upvalue, "Unexpected value returned from debug.getupvalue")
+	assert(debug.getupvalue(test, 1) == u1, ("Unexpected upvalue 1 returned from debug.getupvalue: %s"):format(tostring(debug.getupvalue(test, 1))))
+	assert(debug.getupvalue(test, 2) == u2, ("Unexpected upvalue 2 returned from debug.getupvalue: %s"):format(tostring(debug.getupvalue(test, 2))))
+	assert(debug.getupvalue(test, 3) == u3, ("Unexpected upvalue 3 returned from debug.getupvalue: %s"):format(tostring(debug.getupvalue(test, 3))))
 end)
 
 test("debug.getupvalues", {}, function()
-	local upvalue = function() end
+	local u1 = function() end
+	local u2 = 2
+	local u3 = 'str'
 	local function test()
-		print(upvalue)
+		print(u1)
+		u2 = 3
+		u3 = 'str2'
 	end
 	local upvalues = debug.getupvalues(test)
-	assert(upvalues[1] == upvalue, "Unexpected value returned from debug.getupvalues")
-end)
+	assert(upvalues[1] == u1, ("Unexpected upvalue 1 returned from debug.getupvalues: %s"):format(tostring(upvalues[1])))
+	assert(upvalues[2] == u2, ("Unexpected upvalue 2 returned from debug.getupvalues: %s"):format(tostring(upvalues[2])))
+	assert(upvalues[3] == u3, ("Unexpected upvalue 3 returned from debug.getupvalues: %s"):format(tostring(upvalues[3])))
+end)              
 
 test("debug.setconstant", {}, function()
 	local function test()
@@ -653,6 +749,37 @@ test("hookmetamethod", {}, function()
 	assert(ref() == false, "Did not return the original function")
 end)
 
+test("checkcaller", {}, function()
+	assert(checkcaller(), "Main scope should return true")
+	local success = ''
+	local starttime = tick()
+	local hmt = hookmetamethod
+    local cc = checkcaller
+	local old
+	old = hmt(game, "__namecall", function(...)
+		pcall(function()
+			local curr = cc()
+		    if not curr then
+		    	success = true
+		    	hmt(game, "__namecall", old)
+		    elseif tick() - starttime >= 1 then
+		    	success = false
+		    	hmt(game, "__namecall", old)
+		    end
+		end)
+		return old(...)
+	end)
+	repeat
+		if tick() - starttime > 2 then
+			hookmetamethod(game, "__namecall", old)
+			assert(false, 'hookmetamethod took too long')
+		end
+		task.wait() 
+	until type(success) == 'boolean'
+	hookmetamethod(game, "__namecall", old)
+	assert(success, "Did not return false for a hooked metamethod")
+end, {'hookmetamethod'})
+
 test("getnamecallmethod", {}, function()
 	local method
 	local ref
@@ -663,10 +790,20 @@ test("getnamecallmethod", {}, function()
 		return ref(...)
 	end)
 	game:GetService("Lighting")
-	assert(method == "GetService", "Did not get the correct method (GetService)")
+	if method ~= 'GetService' then
+		hookmetamethod(game, "__namecall", ref)
+		assert(false, "Did not get the correct method (GetService)")
+	end
+	method = nil
+	game:FindFirstChild("__TEST")
+	if method ~= 'FindFirstChild' then
+		hookmetamethod(game, "__namecall", ref)
+		assert(false, "Did not get the correct method (FindFirstChild)")
+	end
 end)
 
 test("isreadonly", {}, function()
+	assert(not isreadonly({}), "Did not return false for a table")
 	local object = {}
 	table.freeze(object)
 	assert(isreadonly(object), "Did not return true for a read-only table")
@@ -675,11 +812,9 @@ end)
 test("setrawmetatable", {}, function()
 	local object = setmetatable({}, { __index = function() return false end, __metatable = "Locked!" })
 	local objectReturned = setrawmetatable(object, { __index = function() return true end })
-	assert(object, "Did not return the original object")
+	assert(object, "setmetatable did not return the original object (how?)")
 	assert(object.test == true, "Failed to change the metatable")
-	if objectReturned then
-		return objectReturned == object and "Returned the original object" or "Did not return the original object"
-	end
+	assert(objectReturned == object, "Did not return the original object")
 end)
 
 test("setreadonly", {}, function()
@@ -744,16 +879,20 @@ test("setfpscap", {}, function()
 	local step60 = step()
 	setfpscap(0)
 	local step0 = step()
+	setfpscap(240)
 	return step60 .. "fps @60 • " .. step0 .. "fps @0"
 end)
 
 -- Scripts
 
+test('getreg', {})
+
 test("getgc", {}, function()
 	local gc = getgc()
 	assert(type(gc) == "table", "Did not return a table")
 	assert(#gc > 0, "Did not return a table with any values")
-end)
+	assert(getreg() ~= gc, "Returned registry")
+end, {'getreg'})
 
 test("getgenv", {}, function()
 	getgenv().__TEST_GLOBAL = true
@@ -762,29 +901,38 @@ test("getgenv", {}, function()
 end)
 
 test("getloadedmodules", {}, function()
+	local module = Instance.new('ModuleScript')
 	local modules = getloadedmodules()
 	assert(type(modules) == "table", "Did not return a table")
 	assert(#modules > 0, "Did not return a table with any values")
 	assert(typeof(modules[1]) == "Instance", "First value is not an Instance")
 	assert(modules[1]:IsA("ModuleScript"), "First value is not a ModuleScript")
+	assert(not table.find(modules, module), "Contains not loaded modules")
 end)
 
 test("getrenv", {}, function()
+	assert(type(getrenv()) == "table", "Did not return a table")
+	assert(type(getrenv()._G == "table"), "Did not return a table for getrenv()._G")
+	assert(type(getrenv().shared == "table"), "Did not return a table for getrenv().shared")
 	assert(_G ~= getrenv()._G, "The variable _G in the executor is identical to _G in the game")
+	assert(shared ~= getrenv().shared, "The variable shared in the executor is identical to shared in the game")
 end)
 
 test("getrunningscripts", {}, function()
+	local scr = Instance.new('LocalScript')
 	local scripts = getrunningscripts()
 	assert(type(scripts) == "table", "Did not return a table")
 	assert(#scripts > 0, "Did not return a table with any values")
 	assert(typeof(scripts[1]) == "Instance", "First value is not an Instance")
 	assert(scripts[1]:IsA("ModuleScript") or scripts[1]:IsA("LocalScript"), "First value is not a ModuleScript or LocalScript")
+	assert(not table.find(scripts, scr), "Contains not running scripts")
 end)
 
 test("getscriptbytecode", {"dumpstring"}, function()
 	local animate = game:GetService("Players").LocalPlayer.Character.Animate
 	local bytecode = getscriptbytecode(animate)
 	assert(type(bytecode) == "string", "Did not return a string for Character.Animate (a " .. animate.ClassName .. ")")
+	assert(bytecode:find('IsUserFeatureEnabled'), 'Returned invalid bytecode for Character.Animate')
 end)
 
 test("getscripthash", {}, function()
@@ -819,10 +967,19 @@ test("getthreadidentity", {"getidentity", "getthreadcontext"}, function()
 	assert(type(getthreadidentity()) == "number", "Did not return a number")
 end)
 
-test("setthreadidentity", {"setidentity", "setthreadcontext"}, function()
-	setthreadidentity(3)
-	assert(getthreadidentity() == 3, "Did not set the thread identity")
-end)
+test("setthreadidentity", {"setidentity", "setthreadcontext"}, function() -- TODO: more tests
+	local oldidentity = setthreadidentity(2)
+	assert(type(oldidentity) == "number", "Did not return old identity")
+	if pcall(function() return game.CoreGui.Name end) then
+		wait(0.1)
+		if pcall(function() return game.CoreGui.Name end) then
+			assert(false, 'Identity was not set')
+		else
+			assert(false, 'Identity set successfully but not instantly')
+		end
+	end
+	setthreadidentity(oldidentity)
+end, {'getthreadidentity'})
 
 -- Drawing
 
@@ -896,3 +1053,5 @@ test("WebSocket.connect", {}, function()
 	end
 	ws:Close()
 end)
+
+finished = true

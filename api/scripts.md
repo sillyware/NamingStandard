@@ -46,22 +46,49 @@ getgenv().__IS_LOADED = true
 
 ---
 
+## getreg
+
+```lua
+function getreg(): { [any]: any }
+```
+
+Returns the Lua registry.
+
+### Example
+
+Make a reference and obtain it:
+
+```lua
+local registry = getreg()
+local something = 5
+
+-- Make reference
+local ref = #registry + 1
+print(registry[ref]) -- nil
+registry[ref] = something
+
+-- Obtain reference
+local obtained_something = registry[ref]
+
+print(ref) -- some integer
+print(obtained_something == something) -- true
+```
+
+---
+
 ## getloadedmodules
 
 ```lua
-function getloadedmodules(excludeCore: boolean?): {ModuleScript}
+function getloadedmodules(): {ModuleScript}
 ```
 
-Returns a list of ModuleScripts that have been loaded. If `excludeCore` is true, CoreScript-related modules will not be included in the list.
-
-### Parameters
-
- * `excludeCore` - Whether or not to exclude core modules from the list.
+Returns a list of ModuleScripts that have been loaded.
+Why is this different from original UNC? Many scripts use getloadedmodules without true argument and this hurts performance with some scripts such as Hydroxide
 
 ### Example
 
 ```lua
-local modules = getloadedmodules(true)
+local modules = getloadedmodules()
 
 for _, module in ipairs(modules) do
 	print(module:GetFullName())
