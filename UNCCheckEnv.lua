@@ -525,8 +525,35 @@ test("mousescroll", {})
 -- Instances
 
 test("fireclickdetector", {}, function()
-	local detector = Instance.new("ClickDetector")
-	fireclickdetector(detector, 50, "MouseHoverEnter")
+    local Fire = fireclickdetector
+
+    local Events = {
+        'MouseClick',
+        'RightMouseClick',
+        'MouseHoverEnter',
+        'MouseHoverLeave'
+    }
+    local Failed = {}
+
+    local Detector = Instance.new("ClickDetector")
+    for i, EventName in next, Events do
+        local Signal = Detector[EventName]
+        local Result = false
+        Signal:Connect(function()
+            Result = true
+        end)
+        Fire(Detector, 1, EventName)
+        if not Result then
+            table.insert(Failed, EventName)
+        end
+        if UNCDebug then
+            print(EventName, ':', Result)
+        end
+    end
+
+    if #Failed > 0 then
+        assert(false, 'Failed events: '..table.concat(Failed, ', '))
+    end
 end)
 
 test("getcallbackvalue", {}, function()
