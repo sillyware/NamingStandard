@@ -82,8 +82,8 @@ print(obtained_something == something) -- true
 function getloadedmodules(): {ModuleScript}
 ```
 
-Returns a list of ModuleScripts that have been loaded.
-Why is this different from original UNC? Many scripts use getloadedmodules without true argument and this hurts performance with some scripts such as Hydroxide
+Returns a list of ModuleScripts that have been loaded, **excluding core modules**.
+Why is this different from original UNC? Many scripts use getloadedmodules without true argument and this hurts performance with some scripts such as Hydroxide.
 
 ### Example
 
