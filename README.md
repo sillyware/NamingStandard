@@ -1,3 +1,9 @@
+# dUNC
+You can test your exploit's environment with dUNC using this script: 
+```lua
+loadstring(game:HttpGet('https://raw.githubusercontent.com/sillyware/dUNC/refs/heads/main/UNCCheckEnv.lua'))()
+```
+
 # Unified Naming Convention
 aka UNC, is an organization between executor developers to provide a unified scripting API for our scripters.
 
